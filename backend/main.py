@@ -26,6 +26,15 @@ app = FastAPI()
 # 提供靜態檔案（TTS 音訊）
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# 允許前端跨域請求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 或具體設為 ["http://127.0.0.1:5500"]（如果你用 VSCode Live Server）
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 whisper_model = None
 
 interview_sessions = {} # New: To store conversation history and job info per session
@@ -44,14 +53,6 @@ async def load_whisper_model():
         whisper_model = whisper.load_model("turbo", device="cpu")
     logging.info("Whisper model loaded.")
 
-# 允許前端跨域請求
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 或具體設為 ["http://127.0.0.1:5500"]（如果你用 VSCode Live Server）
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.get("/jobs")
 async def get_jobs(keyword: str = "前端工程師"):
@@ -79,11 +80,19 @@ async def get_jobs(keyword: str = "前端工程師"):
 
             result = []
             for job in job_list[:10]:
-                job_url = f"https://www.104.com.tw/job/{job.get('jobNo')}"
+                logging.info(f"Full job object from 104 API: {job}") # Add this line
+                job_no = job.get('jobNo')
+                relative_job_url = job.get('link', {}).get('job')
+                if relative_job_url:
+                    job_url = f"https:{relative_job_url}"
+                else:
+                    job_url = f"https://www.104.com.tw/job/{job_no}" # Fallback, though it's likely incorrect
+                logging.info(f"Processing job: {job.get('jobName')}, jobNo: {job_no}, Corrected URL: {job_url}")
                 result.append({
                     "title": job.get("jobName"),
                     "company": job.get("custName"),
-                    "url": job_url
+                    "url": job_url,
+                    "description": job.get("description", "") # Add description
                 })
             return {"jobs": result}
         except Exception as e:
@@ -113,6 +122,7 @@ async def start_interview(request: Request):
         body = await request.json()
         job = body.get("job", {})
         job_title = job.get("title", "未知職缺")
+        job_description = body.get("job_description", "") # Get job description from request body
 
         session_id = str(uuid.uuid4()) # Generate a unique session ID
         
@@ -122,10 +132,8 @@ async def start_interview(request: Request):
             "解決問題能力", "學習能力", "團隊合作", "創新思維"
         ]
 
-        # Prompt to generate interview questions based on job title and evaluation dimensions
-        question_generation_prompt = f"""你是一位專業的面試官。請根據應徵職位「{job_title}」，設計 2 到 3 個面試問題。這些問題應該能夠評估候選人在以下方面的能力：{', '.join(evaluation_dimensions)}。請以 JSON 格式返回問題列表，每個問題包含 'id' 和 'question' 字段。例如：
-        {{"questions": [{{"id": 1, "question": "請自我介紹。"}}, {{"id": 2, "question": "..."}}]}}
-        """
+        # Prompt to generate interview questions based on job title, job description and evaluation dimensions
+        question_generation_prompt = f"""你是一位專業的面試官。請根據應徵職位「{job_title}」以及以下職位描述：\n\n{job_description}\n\n設計 5 到 8 個面試問題。這些問題應該能夠評估候選人在以下方面的能力：{', '.join(evaluation_dimensions)}。請以 JSON 格式返回問題列表，每個問題包含 'id' 和 'question' 字段。例如：\n        {{"questions": [{{"id": 1, "question": "請自我介紹。"}}, {{"id": 2, "question": "..."}}]}}\n        """
 
         payload_questions = {
             "contents": [

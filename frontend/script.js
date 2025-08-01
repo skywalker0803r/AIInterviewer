@@ -35,6 +35,7 @@ $(document).ready(function () {
         const index = $(this).data('index');
         selectedJob = jobs[index];
         $('#selected-job').text(`✅ 已選擇職缺：${selectedJob.title} @ ${selectedJob.company}`);
+        console.log("Selected Job Description:", selectedJob.description); // Add this line to verify
       });
 
     } catch (err) {
@@ -61,7 +62,7 @@ $(document).ready(function () {
         url: "http://127.0.0.1:8002/start_interview",
         method: "POST",
         contentType: "application/json",
-        data: JSON.stringify({ job: selectedJob })
+        data: JSON.stringify({ job: selectedJob, job_description: selectedJob.description })
       });
 
       if (res && res.text) {
@@ -91,40 +92,40 @@ $(document).ready(function () {
         };
 
         ws.onmessage = (event) => {
-          console.log("Raw WebSocket message:", event.data);
-          const data = JSON.parse(event.data);
-          console.log("Parsed WebSocket data:", data);
-          if (data.text) {
-            if (data.speaker === "你") {
-              appendToChat("🗣️ 你", data.text);
-            } else {
-              appendToChat("🤖 AI 面試官", data.text);
+            console.log("Raw WebSocket message (audio-only):", event.data);
+            const data = JSON.parse(event.data);
+            console.log("Parsed WebSocket data (audio-only):", data);
+            if (data.text) {
+              if (data.speaker === "你") {
+                appendToChat("🗣️ 你", data.text);
+              } else {
+                appendToChat("🤖 AI 面試官", data.text);
+              }
             }
-          }
-          if (data.audio_url) {
-            $('#tts-audio').attr("src", data.audio_url)[0].play();
-          }
-          if (data.interview_ended) {
-            console.log("Interview ended signal received from backend.");
-            interviewEndedByBackend = true; // Set the flag immediately
-            $('#record-btn').hide();
-            $('#end-interview').prop('disabled', true); // Disable the end interview button
-            $('#chat-box').append("<p class='text-green-500'>面試結束，正在生成報告...</p>");
-            console.log(`Attempting to get interview report for session ID: ${sessionId}`);
-            // Call backend to get report
-            $.get(`http://127.0.0.1:8002/get_interview_report?session_id=${sessionId}`)
-              .done(function(report) {
-                console.log("Successfully received interview report:", report);
-                displayReport(report);
-              })
-              .fail(function(err) {
-                console.error("Failed to get interview report:", err);
-                $('#report-content').html("<p class='text-red-500'>報告生成失敗。</p>");
-                $('#report-section').removeClass('hidden');
-                $('#restart-interview').show();
-              });
-          }
-        };
+            if (data.audio_url) {
+              $('#tts-audio').attr("src", data.audio_url)[0].play();
+            }
+            if (data.interview_ended) {
+              console.log("Interview ended signal received from backend (audio-only).");
+              interviewEndedByBackend = true; // Set the flag immediately
+              $('#record-btn').hide();
+              $('#end-interview').prop('disabled', true); // Disable the end interview button
+              $('#chat-box').append("<p class='text-green-500'>面試結束，正在生成報告...</p>");
+              console.log(`Attempting to get interview report for session ID: ${sessionId} (audio-only)`);
+              // Call backend to get report
+              $.get(`http://127.0.0.1:8002/get_interview_report?session_id=${sessionId}`)
+                .done(function(report) {
+                  console.log("Successfully received interview report (audio-only):", report);
+                  displayReport(report);
+                })
+                .fail(function(err) {
+                  console.error("Failed to get interview report (audio-only):", err);
+                  $('#report-content').html("<p class='text-red-500'>報告生成失敗。</p>");
+                  $('#report-section').removeClass('hidden');
+                  $('#restart-interview').show();
+                });
+            }
+          };
 
         ws.onclose = () => {
           console.log("WebSocket disconnected. interviewEndedByBackend:", interviewEndedByBackend);
