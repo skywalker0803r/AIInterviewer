@@ -3,6 +3,7 @@ let streamMode = "none";
 let ws = null; // WebSocket instance
 let mediaRecorder = null;
 let audioChunks = [];
+let sessionId = null; // New: To store the session ID
 
 $(document).ready(function () {
   $('#search-btn').on('click', async function () {
@@ -50,67 +51,41 @@ $(document).ready(function () {
     // Disable the start button to prevent multiple clicks
     $('#start-interview').prop('disabled', true).text("面試進行中...");
 
+    $('#chat-box').html("<p class='text-blue-500'>⏳ 等待 AI 面試官回覆...</p>");
+
+    // Initial POST request for the first question
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      streamMode = "視訊 + 語音";
-      $('#mode-label').text(`目前模式：${streamMode}`);
-      $('#video-section').removeClass('hidden');
-      document.getElementById('webcam').srcObject = stream;
+      const res = await $.ajax({
+        url: "http://127.0.0.1:8002/start_interview",
+        method: "POST",
+        contentType: "application/json",
+        data: JSON.stringify({ job: selectedJob })
+      });
 
-      // Initialize WebSocket
-      ws = new WebSocket("ws://127.0.0.1:8002/ws");
+      if (res && res.text) {
+        appendToChat("🤖 AI 面試官", res.text);
+        sessionId = res.session_id; // Store the session ID
+      }
 
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        $('#record-btn').show(); // Show the record button
-      };
+      if (res && res.audio_url) {
+        $('#tts-audio').attr("src", res.audio_url)[0].play();
+      }
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.text) {
-          if (data.speaker === "你") {
-            appendToChat("🗣️ 你", data.text);
-          } else {
-            appendToChat("🤖 AI 面試官", data.text);
-          }
-        }
-        if (data.audio_url) {
-          $('#tts-audio').attr("src", data.audio_url)[0].play();
-        }
-      };
-
-      ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        }
-        $('#start-interview').prop('disabled', false).text("開始模擬面試");
-        $('#record-btn').hide(); // Hide the record button
-      };
-
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        alert("WebSocket 連線錯誤，請檢查後端服務");
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-          mediaRecorder.stop();
-        }
-        $('#start-interview').prop('disabled', false).text("開始模擬面試");
-        $('#record-btn').hide(); // Hide the record button
-      };
-
-    } catch (err) {
-      console.warn("啟動視訊失敗，改用語音模式", err);
+      // Establish WebSocket connection after getting session ID
       try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamMode = "語音僅";
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        streamMode = "視訊 + 語音";
         $('#mode-label').text(`目前模式：${streamMode}`);
+        $('#video-section').removeClass('hidden');
+        document.getElementById('webcam').srcObject = stream;
 
-        // Initialize WebSocket for audio-only
-        ws = new WebSocket("ws://127.0.0.1:8002/ws");
+        // Initialize WebSocket with session ID
+        ws = new WebSocket(`ws://127.0.0.1:8002/ws?session_id=${sessionId}`);
 
         ws.onopen = () => {
-          console.log("WebSocket connected (audio-only)");
+          console.log("WebSocket connected");
           $('#record-btn').show(); // Show the record button
+          $('#end-interview').show(); // Show the end interview button
         };
 
         ws.onmessage = (event) => {
@@ -128,48 +103,82 @@ $(document).ready(function () {
         };
 
         ws.onclose = () => {
-          console.log("WebSocket disconnected (audio-only)");
+          console.log("WebSocket disconnected");
           if (mediaRecorder && mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
           }
           $('#start-interview').prop('disabled', false).text("開始模擬面試");
           $('#record-btn').hide(); // Hide the record button
+          $('#end-interview').hide(); // Hide the end interview button
         };
 
         ws.onerror = (error) => {
-          console.error("WebSocket error (audio-only):", error);
+          console.error("WebSocket error:", error);
           alert("WebSocket 連線錯誤，請檢查後端服務");
           if (mediaRecorder && mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
           }
           $('#start-interview').prop('disabled', false).text("開始模擬面試");
           $('#record-btn').hide(); // Hide the record button
+          $('#end-interview').hide(); // Hide the end interview button
         };
 
-      } catch (err2) {
-        alert("❌ 無法取得麥克風或攝影機權限");
-        $('#start-interview').prop('disabled', false).text("開始模擬面試");
-        return;
-      }
-    }
+      } catch (err) {
+        console.warn("啟動視訊失敗，改用語音模式", err);
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          streamMode = "語音僅";
+          $('#mode-label').text(`目前模式：${streamMode}`);
 
-    $('#chat-box').html("<p class='text-blue-500'>⏳ 等待 AI 面試官回覆...</p>");
+          // Initialize WebSocket for audio-only with session ID
+          ws = new WebSocket(`ws://127.0.0.1:8002/ws?session_id=${sessionId}`);
 
-    // Initial POST request for the first question
-    try {
-      const res = await $.ajax({
-        url: "http://127.0.0.1:8002/start_interview",
-        method: "POST",
-        contentType: "application/json",
-        data: JSON.stringify({ job: selectedJob })
-      });
+          ws.onopen = () => {
+            console.log("WebSocket connected (audio-only)");
+            $('#record-btn').show(); // Show the record button
+            $('#end-interview').show(); // Show the end interview button
+          };
 
-      if (res && res.text) {
-        appendToChat("🤖 AI 面試官", res.text);
-      }
+          ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.text) {
+              if (data.speaker === "你") {
+                appendToChat("🗣️ 你", data.text);
+              } else {
+                appendToChat("🤖 AI 面試官", data.text);
+              }
+            }
+            if (data.audio_url) {
+              $('#tts-audio').attr("src", data.audio_url)[0].play();
+            }
+          };
 
-      if (res && res.audio_url) {
-        $('#tts-audio').attr("src", res.audio_url)[0].play();
+          ws.onclose = () => {
+            console.log("WebSocket disconnected (audio-only)");
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            $('#start-interview').prop('disabled', false).text("開始模擬面試");
+            $('#record-btn').hide(); // Hide the record button
+            $('#end-interview').hide(); // Hide the end interview button
+          };
+
+          ws.onerror = (error) => {
+            console.error("WebSocket error (audio-only):", error);
+          alert("WebSocket 連線錯誤，請檢查後端服務");
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            $('#start-interview').prop('disabled', false).text("開始模擬面試");
+            $('#record-btn').hide(); // Hide the record button
+            $('#end-interview').hide(); // Hide the end interview button
+          };
+
+        } catch (err2) {
+          alert("❌ 無法取得麥克風或攝影機權限");
+          $('#start-interview').prop('disabled', false).text("開始模擬面試");
+          return;
+        }
       }
 
     } catch (err) {
@@ -214,6 +223,22 @@ $(document).ready(function () {
       $(this).text("結束說話").removeClass("bg-purple-600").addClass("bg-red-600");
       console.log("Recording started.");
     }
+  });
+
+  // End interview button logic
+  $('#end-interview').on('click', async function () {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "end_interview", session_id: sessionId })); // Send a signal to backend
+      ws.close(); // Close WebSocket connection
+    }
+    // Reset UI
+    $('#start-interview').prop('disabled', false).text("開始模擬面試");
+    $('#record-btn').hide();
+    $('#end-interview').hide();
+    $('#chat-box').html("<p class='text-gray-500'>面試已結束。</p>");
+    $('#selected-job').text("");
+    selectedJob = null;
+    sessionId = null;
   });
 });
 

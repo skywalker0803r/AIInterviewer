@@ -27,6 +27,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 whisper_model = None
 
+interview_sessions = {} # New: To store conversation history and job info per session
+
 @app.on_event("startup")
 async def load_whisper_model():
     global whisper_model
@@ -104,6 +106,14 @@ async def start_interview(request: Request):
         job = body.get("job", {})
         job_title = job.get("title", "未知職缺")
 
+        session_id = str(uuid.uuid4()) # Generate a unique session ID
+        
+        # Initialize conversation history for this session
+        interview_sessions[session_id] = {
+            "job_title": job_title,
+            "conversation_history": []
+        }
+
         prompt = f'''你是一位嚴謹但友善的面試官，
         對一位應徵「{job_title}」的候選人進行第一輪面試。
         請提出第一個問題，例如要求自我介紹或詢問為何想應徵
@@ -125,6 +135,8 @@ async def start_interview(request: Request):
 
             text = gemini_reply["candidates"][0]["content"]["parts"][0]["text"]
 
+        # Add Gemini's first question to the conversation history
+        interview_sessions[session_id]["conversation_history"].append({"role": "model", "parts": [{"text": text}]})
 
         logging.info(f"Gemini 回覆內容：{text}")
         tts = gTTS(text, lang="zh-TW")
@@ -135,7 +147,8 @@ async def start_interview(request: Request):
 
         return JSONResponse({
             "text": text,
-            "audio_url": f"http://127.0.0.1:8002/static/audio/{audio_filename}"
+            "audio_url": f"http://127.0.0.1:8002/static/audio/{audio_filename}",
+            "session_id": session_id # Return the session ID
         })
 
     except Exception as e:
@@ -176,52 +189,88 @@ async def process_user_input(audio_chunk: bytes, video_frame: bytes = None):
     return transcribed_text, emotion
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, session_id: str):
     await websocket.accept()
-    conversation_history = [] # 儲存對話歷史
+    
+    if session_id not in interview_sessions:
+        logging.error(f"Session ID {session_id} not found.")
+        await websocket.close(code=1008, reason="Invalid session ID")
+        return
+
+    session_data = interview_sessions[session_id]
+    conversation_history = session_data["conversation_history"]
+    job_title = session_data["job_title"]
+
     try:
         while True:
-            logging.info("Waiting for audio data from frontend...")
-            data = await websocket.receive_bytes()
-            logging.info(f"Received audio chunk of size: {len(data)} bytes")
+            logging.info("Waiting for data from frontend...")
+            message = await websocket.receive()
+            
+            if "text" in message: # Handle text messages (e.g., end_interview signal)
+                try:
+                    json_message = json.loads(message["text"])
+                    if json_message.get("type") == "end_interview":
+                        logging.info(f"Received end_interview signal for session {session_id}. Cleaning up.")
+                        if session_id in interview_sessions:
+                            del interview_sessions[session_id]
+                        await websocket.close()
+                        return
+                except json.JSONDecodeError:
+                    logging.warning(f"Received non-JSON text message: {message['text']}")
+                    # Optionally, handle other text messages if needed
 
-            user_text, user_emotion = await process_user_input(data)
+            elif "bytes" in message: # Handle binary messages (audio data)
+                data = message["bytes"]
+                logging.info(f"Received audio chunk of size: {len(data)} bytes")
 
-            if user_text.strip(): # 只有當使用者有說話時才進行處理
-                # 將使用者轉錄的文字發送回前端顯示
-                await websocket.send_json({"speaker": "你", "text": user_text})
+                user_text, user_emotion = await process_user_input(data)
 
-                # 將使用者輸入加入對話歷史
-                conversation_history.append({"role": "user", "parts": [{"text": user_text}]})
+                if user_text.strip(): # 只有當使用者有說話時才進行處理
+                    # 將使用者轉錄的文字發送回前端顯示
+                    await websocket.send_json({"speaker": "你", "text": user_text})
 
-                # 準備傳給 Gemini 的 payload
-                payload = {
-                    "contents": conversation_history
-                }
+                    # 將使用者輸入加入對話歷史
+                    conversation_history.append({"role": "user", "parts": [{"text": user_text}]})
 
-                async with httpx.AsyncClient() as client:
-                    gemini_reply = await call_gemini_api(client, payload)
-                    logging.info(f"Gemini API 回應：{json.dumps(gemini_reply, ensure_ascii=False, indent=2)}")
+                    # 準備傳給 Gemini 的 payload
+                    # 動態添加面試官角色、職缺資訊和回覆長度限制
+                    system_instruction = f"你是一位嚴謹但友善的面試官，對方是應徵「{job_title}」的候選人。請根據對話歷史，向候選人提出一個問題。你的回覆應該控制在100個字以內。"
+                    
+                    payload = {
+                        "contents": conversation_history,
+                        "system_instruction": {"parts": [{"text": system_instruction}]}
+                    }
 
-                    gemini_response_text = ""
-                    if "candidates" in gemini_reply and gemini_reply["candidates"]:
-                        gemini_response_text = gemini_reply["candidates"][0]["content"]["parts"][0]["text"]
-                        # 將 Gemini 的回覆加入對話歷史
-                        conversation_history.append({"role": "model", "parts": [{"text": gemini_response_text}]})
-                    else:
-                        gemini_response_text = "抱歉，我沒有理解您的意思，請再說一次。"
+                    async with httpx.AsyncClient() as client:
+                        gemini_reply = await call_gemini_api(client, payload)
+                        logging.info(f"Gemini API 回應：{json.dumps(gemini_reply, ensure_ascii=False, indent=2)}")
 
-                logging.info(f"Gemini 回覆內容：{gemini_response_text}")
-                tts = gTTS(gemini_response_text, lang="zh-TW")
-                audio_filename = f"{uuid.uuid4().hex}.mp3"
-                audio_path = f"static/audio/{audio_filename}"
-                os.makedirs("static/audio", exist_ok=True)
-                tts.save(audio_path)
-                audio_url = f"http://127.0.0.1:8002/static/audio/{audio_filename}"
+                        gemini_response_text = ""
+                        if "candidates" in gemini_reply and gemini_reply["candidates"]:
+                            gemini_response_text = gemini_reply["candidates"][0]["content"]["parts"][0]["text"]
+                            # 將 Gemini 的回覆加入對話歷史
+                            conversation_history.append({"role": "model", "parts": [{"text": gemini_response_text}]})
+                        else:
+                            gemini_response_text = "抱歉，我沒有理解您的意思，請再說一次。"
 
-                await websocket.send_json({"text": gemini_response_text, "audio_url": audio_url})
+                    logging.info(f"Gemini 回覆內容：{gemini_response_text}")
+                    tts = gTTS(gemini_response_text, lang="zh-TW")
+                    audio_filename = f"{uuid.uuid4().hex}.mp3"
+                    audio_path = f"static/audio/{audio_filename}"
+                    os.makedirs("static/audio", exist_ok=True)
+                    tts.save(audio_path)
+                    audio_url = f"http://127.0.0.1:8002/static/audio/{audio_filename}"
+
+                    await websocket.send_json({"text": gemini_response_text, "audio_url": audio_url})
+
+            else:
+                logging.warning(f"Received unknown WebSocket message type: {message}")
 
     except WebSocketDisconnect:
-        logging.info("Client disconnected from WebSocket")
+        logging.info(f"Client disconnected from WebSocket for session {session_id}")
+        if session_id in interview_sessions:
+            del interview_sessions[session_id] # Clean up session on disconnect
     except Exception as e:
-        logging.error(f"WebSocket error: {e}")
+        logging.error(f"WebSocket error for session {session_id}: {e}")
+        if session_id in interview_sessions:
+            del interview_sessions[session_id] # Clean up session on error
