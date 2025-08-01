@@ -123,7 +123,7 @@ async def start_interview(request: Request):
         ]
 
         # Prompt to generate interview questions based on job title and evaluation dimensions
-        question_generation_prompt = f"""你是一位專業的面試官。請根據應徵職位「{job_title}」，設計 5 到 8 個面試問題。這些問題應該能夠評估候選人在以下方面的能力：{', '.join(evaluation_dimensions)}。請以 JSON 格式返回問題列表，每個問題包含 'id' 和 'question' 字段。例如：
+        question_generation_prompt = f"""你是一位專業的面試官。請根據應徵職位「{job_title}」，設計 2 到 3 個面試問題。這些問題應該能夠評估候選人在以下方面的能力：{', '.join(evaluation_dimensions)}。請以 JSON 格式返回問題列表，每個問題包含 'id' 和 'question' 字段。例如：
         {{"questions": [{{"id": 1, "question": "請自我介紹。"}}, {{"id": 2, "question": "..."}}]}}
         """
 
@@ -266,10 +266,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 try:
                     json_message = json.loads(message["text"])
                     if json_message.get("type") == "end_interview":
-                        logging.info(f"Received end_interview signal for session {session_id}. Cleaning up.")
-                        if session_id in interview_sessions:
-                            del interview_sessions[session_id]
-                            logging.info(f"Session {session_id} cleaned up.")
+                        logging.info(f"Received end_interview signal for session {session_id}. Closing WebSocket.")
                         await websocket.close()
                         logging.info(f"WebSocket closed for session {session_id} after end_interview signal.")
                         return
