@@ -4,6 +4,7 @@ let ws = null; // WebSocket instance
 let mediaRecorder = null;
 let audioChunks = [];
 let sessionId = null; // New: To store the session ID
+let interviewEndedByBackend = false; // New: Flag to indicate if interview ended by backend signal
 
 $(document).ready(function () {
   $('#search-btn').on('click', async function () {
@@ -52,6 +53,7 @@ $(document).ready(function () {
     $('#start-interview').prop('disabled', true).text("面試進行中...");
 
     $('#chat-box').html("<p class='text-blue-500'>⏳ 等待 AI 面試官回覆...</p>");
+    // $('#report-section').addClass('hidden'); // Hide report section on new interview - Removed as per user request
 
     // Initial POST request for the first question
     try {
@@ -89,7 +91,9 @@ $(document).ready(function () {
         };
 
         ws.onmessage = (event) => {
+          console.log("Raw WebSocket message:", event.data);
           const data = JSON.parse(event.data);
+          console.log("Parsed WebSocket data:", data);
           if (data.text) {
             if (data.speaker === "你") {
               appendToChat("🗣️ 你", data.text);
@@ -99,6 +103,26 @@ $(document).ready(function () {
           }
           if (data.audio_url) {
             $('#tts-audio').attr("src", data.audio_url)[0].play();
+          }
+          if (data.interview_ended) {
+            console.log("Interview ended signal received from backend.");
+            interviewEndedByBackend = true; // Set the flag immediately
+            $('#record-btn').hide();
+            $('#end-interview').hide();
+            $('#chat-box').append("<p class='text-green-500'>面試結束，正在生成報告...</p>");
+            console.log(`Attempting to get interview report for session ID: ${sessionId}`);
+            // Call backend to get report
+            $.get(`http://127.0.0.1:8002/get_interview_report?session_id=${sessionId}`)
+              .done(function(report) {
+                console.log("Successfully received interview report:", report);
+                displayReport(report);
+              })
+              .fail(function(err) {
+                console.error("Failed to get interview report:", err);
+                $('#report-content').html("<p class='text-red-500'>報告生成失敗。</p>");
+                $('#report-section').removeClass('hidden');
+                $('#restart-interview').show();
+              });
           }
         };
 
@@ -110,6 +134,13 @@ $(document).ready(function () {
           $('#start-interview').prop('disabled', false).text("開始模擬面試");
           $('#record-btn').hide(); // Hide the record button
           $('#end-interview').hide(); // Hide the end interview button
+          // If interview ended by backend signal, report will be displayed. Otherwise, reset UI.
+          if (!interviewEndedByBackend) { // Only reset UI if not ended by backend
+            $('#chat-box').html("<p class='text-gray-500'>面試已結束。</p>");
+            $('#selected-job').text("");
+            selectedJob = null;
+            sessionId = null;
+          }
         };
 
         ws.onerror = (error) => {
@@ -161,6 +192,13 @@ $(document).ready(function () {
             $('#start-interview').prop('disabled', false).text("開始模擬面試");
             $('#record-btn').hide(); // Hide the record button
             $('#end-interview').hide(); // Hide the end interview button
+            if (!interviewEndedByBackend) { // Only reset UI if not ended by backend
+              $('#chat-box').html("<p class='text-gray-500'>面試已結束。</p>");
+              $('#selected-job').text("");
+              selectedJob = null;
+              sessionId = null;
+            }
+            interviewEndedByBackend = false; // Reset the flag
           };
 
           ws.onerror = (error) => {
@@ -227,15 +265,41 @@ $(document).ready(function () {
 
   // End interview button logic
   $('#end-interview').on('click', async function () {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "end_interview", session_id: sessionId })); // Send a signal to backend
-      ws.close(); // Close WebSocket connection
+    if (interviewEndedByBackend) {
+      // If interview was ended by backend, just reset UI, report fetching is handled by onmessage
+      console.log("Manual end button clicked, but interview already ended by backend. Resetting UI (excluding session data). Keep chat-box content.");
+      // Only reset UI elements that don't interfere with report fetching
+      $('#start-interview').prop('disabled', false).text("開始模擬面試");
+      $('#record-btn').hide();
+      $('#end-interview').hide();
+      // Do NOT clear chat-box here, it should show "正在生成報告..."
+      // Do NOT clear selectedJob, sessionId here if interviewEndedByBackend is true
+    } else {
+      // If interview was not ended by backend, this is a manual end
+      console.log("Manual end button clicked. Sending end_interview signal to backend.");
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "end_interview", session_id: sessionId })); // Send a signal to backend
+        ws.close(); // Close WebSocket connection
+      }
+      // Reset all UI elements including session data for a true manual end
+      $('#start-interview').prop('disabled', false).text("開始模擬面試");
+      $('#record-btn').hide();
+      $('#end-interview').hide();
+      $('#chat-box').html("<p class='text-gray-500'>面試已結束。</p>");
+      $('#selected-job').text("");
+      selectedJob = null;
+      sessionId = null;
     }
-    // Reset UI
+    interviewEndedByBackend = false; // Reset the flag for the next interview
+  });
+
+  // Restart interview button logic
+  $('#restart-interview').on('click', function() {
+    $('#report-section').addClass('hidden');
+    $('#report-content').empty();
+    $('#restart-interview').hide();
+    $('#chat-box').empty();
     $('#start-interview').prop('disabled', false).text("開始模擬面試");
-    $('#record-btn').hide();
-    $('#end-interview').hide();
-    $('#chat-box').html("<p class='text-gray-500'>面試已結束。</p>");
     $('#selected-job').text("");
     selectedJob = null;
     sessionId = null;
@@ -249,4 +313,21 @@ function appendToChat(speaker, message) {
       <span>${message}</span>
     </div>
   `).scrollTop($('#chat-box')[0].scrollHeight);
+}
+
+function displayReport(report) {
+  console.log("displayReport function called with report:", report);
+  let reportHtml = `
+    <h3 class="text-lg font-bold mb-2">綜合評分：${report.overall_score.toFixed(2)} / 5</h3>
+    <p class="mb-4">是否錄取：<span class="font-bold ${report.hired ? 'text-green-600' : 'text-red-600'}">${report.hired ? '建議錄取' : '不建議錄取'}</span></p>
+    <h4 class="font-semibold mb-2">各項能力評分：</h4>
+    <ul class="list-disc list-inside">
+  `;
+  for (const dim in report.dimension_scores) {
+    reportHtml += `<li>${dim}：${report.dimension_scores[dim].toFixed(2)} / 5</li>`;
+  }
+  reportHtml += `</ul>`;
+  $('#report-content').html(reportHtml);
+  $('#report-section').removeClass('hidden');
+  $('#restart-interview').show();
 }
