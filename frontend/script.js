@@ -62,23 +62,17 @@ $(document).ready(function () {
 
       ws.onopen = () => {
         console.log("WebSocket connected");
-        // Send initial job info to backend via WebSocket if needed, or rely on initial POST
-        // For now, we assume initial POST handles job setup
-
-        // Start recording audio
-        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-        mediaRecorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            ws.send(event.data); // Send audio chunk to backend
-          }
-        };
-        mediaRecorder.start(1000); // Send data every 1 second
+        $('#record-btn').show(); // Show the record button
       };
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.text) {
-          appendToChat("🤖 AI 面試官", data.text);
+          if (data.speaker === "你") {
+            appendToChat("🗣️ 你", data.text);
+          } else {
+            appendToChat("🤖 AI 面試官", data.text);
+          }
         }
         if (data.audio_url) {
           $('#tts-audio').attr("src", data.audio_url)[0].play();
@@ -91,6 +85,7 @@ $(document).ready(function () {
           mediaRecorder.stop();
         }
         $('#start-interview').prop('disabled', false).text("開始模擬面試");
+        $('#record-btn').hide(); // Hide the record button
       };
 
       ws.onerror = (error) => {
@@ -100,6 +95,7 @@ $(document).ready(function () {
           mediaRecorder.stop();
         }
         $('#start-interview').prop('disabled', false).text("開始模擬面試");
+        $('#record-btn').hide(); // Hide the record button
       };
 
     } catch (err) {
@@ -114,13 +110,7 @@ $(document).ready(function () {
 
         ws.onopen = () => {
           console.log("WebSocket connected (audio-only)");
-          mediaRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
-          mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0) {
-              ws.send(event.data);
-            }
-          };
-          mediaRecorder.start(1000);
+          $('#record-btn').show(); // Show the record button
         };
 
         ws.onmessage = (event) => {
@@ -143,6 +133,7 @@ $(document).ready(function () {
             mediaRecorder.stop();
           }
           $('#start-interview').prop('disabled', false).text("開始模擬面試");
+          $('#record-btn').hide(); // Hide the record button
         };
 
         ws.onerror = (error) => {
@@ -152,6 +143,7 @@ $(document).ready(function () {
             mediaRecorder.stop();
           }
           $('#start-interview').prop('disabled', false).text("開始模擬面試");
+          $('#record-btn').hide(); // Hide the record button
         };
 
       } catch (err2) {
@@ -184,6 +176,43 @@ $(document).ready(function () {
       console.error("啟動面試失敗：", err);
       $('#chat-box').html("<p class='text-red-500'>❌ 面試啟動失敗</p>");
       $('#start-interview').prop('disabled', false).text("開始模擬面試");
+    }
+  });
+
+  // Record button logic
+  $('#record-btn').on('click', async function () {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      alert("WebSocket 未連線，請先開始面試。");
+      return;
+    }
+
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      // Stop recording
+      mediaRecorder.stop();
+      $(this).text("開始說話").removeClass("bg-red-600").addClass("bg-purple-600");
+      console.log("Recording stopped.");
+    } else {
+      // Start recording
+      audioChunks = []; // Clear previous chunks
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorder.ondataavailable = (event) => {
+        console.log("ondataavailable event.data size:", event.data.size, "bytes");
+        audioChunks.push(event.data);
+      };
+      mediaRecorder.onstop = () => {
+        console.log("mediaRecorder onstop triggered.");
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        console.log("Audio Blob size (onstop):", audioBlob.size, "bytes");
+        if (audioBlob.size > 0) {
+          ws.send(audioBlob);
+          appendToChat("🗣️ 你", "正在處理您的語音..."); // Placeholder for user's speech
+        }
+        audioChunks = []; // Clear chunks
+      };
+      mediaRecorder.start(); // Start recording without time slicing
+      $(this).text("結束說話").removeClass("bg-purple-600").addClass("bg-red-600");
+      console.log("Recording started.");
     }
   });
 });

@@ -25,6 +25,15 @@ app = FastAPI()
 # 提供靜態檔案（TTS 音訊）
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+whisper_model = None
+
+@app.on_event("startup")
+async def load_whisper_model():
+    global whisper_model
+    logging.info("Loading Whisper model...")
+    whisper_model = whisper.load_model("turbo")
+    logging.info("Whisper model loaded.")
+
 # 允許前端跨域請求
 app.add_middleware(
     CORSMiddleware,
@@ -126,7 +135,7 @@ async def start_interview(request: Request):
 
         return JSONResponse({
             "text": text,
-            "audio_url": f"http://127.0.0.1:8001/static/audio/{audio_filename}"
+            "audio_url": f"http://127.0.0.1:8002/static/audio/{audio_filename}"
         })
 
     except Exception as e:
@@ -144,8 +153,7 @@ async def process_user_input(audio_chunk: bytes, video_frame: bytes = None):
 
         try:
             # 使用 Whisper 進行語音轉文字
-            model = whisper.load_model("turbo")
-            result = model.transcribe(tmpfile_path, language="zh")
+            result = whisper_model.transcribe(tmpfile_path, language="zh")
             transcribed_text = result["text"]
             logging.info(f"Whisper 轉錄結果: {transcribed_text}")
         except Exception as e:
@@ -173,6 +181,7 @@ async def websocket_endpoint(websocket: WebSocket):
     conversation_history = [] # 儲存對話歷史
     try:
         while True:
+            logging.info("Waiting for audio data from frontend...")
             data = await websocket.receive_bytes()
             logging.info(f"Received audio chunk of size: {len(data)} bytes")
 
@@ -208,7 +217,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 audio_path = f"static/audio/{audio_filename}"
                 os.makedirs("static/audio", exist_ok=True)
                 tts.save(audio_path)
-                audio_url = f"http://127.0.0.1:8001/static/audio/{audio_filename}"
+                audio_url = f"http://127.0.0.1:8002/static/audio/{audio_filename}"
 
                 await websocket.send_json({"text": gemini_response_text, "audio_url": audio_url})
 
